@@ -200,7 +200,7 @@ function CinematicHeroVideo() {
       <video
         ref={videoRef}
         className="hero-video"
-        src="https://1832952182.cdn.123clouddisk.com/1832952182/41038795"
+        src="/assets/hero-cinematic-bg.mp4"
         muted
         autoPlay
         playsInline
@@ -804,7 +804,7 @@ function ScrollVideoChallengeSection() {
         <video
           ref={videoRef}
           className="scroll-challenge__video"
-          src="https://1832952182.cdn.123clouddisk.com/1832952182/41039752"
+          src="/assets/future-product-scroll-bg.mp4"
           muted
           playsInline
           preload="auto"
