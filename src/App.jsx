@@ -51,6 +51,174 @@ const smoothStep = (edge0, edge1, value) => {
   return progress * progress * (3 - 2 * progress);
 };
 
+const canSeekVideo = (video) =>
+  Boolean(
+    video &&
+      Number.isFinite(video.duration) &&
+      video.duration > 0 &&
+      video.readyState >= 2 &&
+      !video.seeking
+  );
+
+const safeSeekVideo = (video, nextTime, { minDelta = 0.018 } = {}) => {
+  if (!canSeekVideo(video)) return false;
+
+  const maxTime = Math.max(0, video.duration - 0.001);
+  const clampedTime = clamp(nextTime, 0, maxTime);
+
+  if (Math.abs(video.currentTime - clampedTime) < minDelta) return false;
+
+  try {
+    video.currentTime = clampedTime;
+    return true;
+  } catch (error) {
+    console.error("[video seek error]", video.src, error, video.networkState, video.readyState);
+    return false;
+  }
+};
+
+const logVideoEvent = (eventName, video) => {
+  if (!video) return;
+
+  if (eventName === "loadedmetadata") {
+    console.log("[video loadedmetadata]", video.src, video.duration, video.readyState, video.networkState);
+    return;
+  }
+
+  if (eventName === "loadeddata") {
+    console.log("[video loadeddata]", video.src, video.readyState, video.networkState);
+    return;
+  }
+
+  if (eventName === "canplay") {
+    console.log("[video canplay]", video.src);
+    return;
+  }
+
+  if (eventName === "error") {
+    console.error("[video error]", video.src, video.error, video.networkState, video.readyState);
+    return;
+  }
+
+  console.warn(`[video ${eventName}]`, video.src, video.readyState, video.networkState);
+};
+
+const ResilientVideo = React.forwardRef(function ResilientVideo(
+  {
+    src,
+    fallback,
+    onLoadedMetadata,
+    onLoadedData,
+    onCanPlay,
+    onError,
+    onStalled,
+    onWaiting,
+    onSuspend,
+    ...props
+  },
+  forwardedRef
+) {
+  const localRef = useRef(null);
+  const fallbackTriedRef = useRef(false);
+  const [currentSrc, setCurrentSrc] = useState(src);
+
+  useEffect(() => {
+    fallbackTriedRef.current = false;
+    setCurrentSrc(src);
+  }, [src]);
+
+  const setVideoRef = (node) => {
+    localRef.current = node;
+
+    if (typeof forwardedRef === "function") {
+      forwardedRef(node);
+      return;
+    }
+
+    if (forwardedRef) forwardedRef.current = node;
+  };
+
+  const switchToFallback = (reason) => {
+    if (!fallback || fallbackTriedRef.current || currentSrc === fallback) {
+      if (!fallback) console.error("[video fallback missing]", currentSrc, reason);
+      return;
+    }
+
+    fallbackTriedRef.current = true;
+    console.warn("[video fallback]", currentSrc, "->", fallback, reason);
+    setCurrentSrc(fallback);
+  };
+
+  useEffect(() => {
+    const video = localRef.current;
+    if (!video) return undefined;
+
+    const metadataTimer = window.setTimeout(() => {
+      if (video.readyState < 1) switchToFallback("loadedmetadata timeout");
+    }, 7000);
+
+    const readyTimer = window.setTimeout(() => {
+      if (video.readyState < 2) switchToFallback("readyState < 2 timeout");
+    }, 11000);
+
+    return () => {
+      window.clearTimeout(metadataTimer);
+      window.clearTimeout(readyTimer);
+    };
+  }, [currentSrc, fallback]);
+
+  const handleLoadedMetadata = (event) => {
+    logVideoEvent("loadedmetadata", event.currentTarget);
+    onLoadedMetadata?.(event);
+  };
+
+  const handleLoadedData = (event) => {
+    logVideoEvent("loadeddata", event.currentTarget);
+    onLoadedData?.(event);
+  };
+
+  const handleCanPlay = (event) => {
+    logVideoEvent("canplay", event.currentTarget);
+    onCanPlay?.(event);
+  };
+
+  const handleError = (event) => {
+    logVideoEvent("error", event.currentTarget);
+    switchToFallback("error");
+    onError?.(event);
+  };
+
+  const handleStalled = (event) => {
+    logVideoEvent("stalled", event.currentTarget);
+    onStalled?.(event);
+  };
+
+  const handleWaiting = (event) => {
+    logVideoEvent("waiting", event.currentTarget);
+    onWaiting?.(event);
+  };
+
+  const handleSuspend = (event) => {
+    logVideoEvent("suspend", event.currentTarget);
+    onSuspend?.(event);
+  };
+
+  return (
+    <video
+      {...props}
+      ref={setVideoRef}
+      src={currentSrc}
+      onLoadedMetadata={handleLoadedMetadata}
+      onLoadedData={handleLoadedData}
+      onCanPlay={handleCanPlay}
+      onError={handleError}
+      onStalled={handleStalled}
+      onWaiting={handleWaiting}
+      onSuspend={handleSuspend}
+    />
+  );
+});
+
 function SplitText({ text, as: Tag = "span", className = "", delay = 34, ...props }) {
   const chars = useMemo(() => Array.from(text), [text]);
 
@@ -166,7 +334,7 @@ function CinematicHeroVideo() {
 
       restartTimerRef.current = window.setTimeout(() => {
         if (!mounted) return;
-        video.currentTime = 0;
+        safeSeekVideo(video, 0, { minDelta: 0 });
         playVideo();
         fadeIn();
       }, 100);
@@ -197,7 +365,7 @@ function CinematicHeroVideo() {
 
   return (
     <div className="hero-video-wrap" aria-hidden="true">
-      <video
+      <ResilientVideo
         ref={videoRef}
         className="hero-video"
         src="/assets/hero-cinematic-bg.mp4"
@@ -211,21 +379,69 @@ function CinematicHeroVideo() {
 }
 
 const demandArchiveHeroVideos = {
-  left: "https://1832952182.cdn.123clouddisk.com/1832952182/40956971",
-  right: "https://1832952182.cdn.123clouddisk.com/1832952182/41204255",
+  left: {
+    id: "demand-hero-left",
+    src: "https://1832952182.cdn.123clouddisk.com/1832952182/40956971",
+    fallback: "/assets/demand-hero-left.mp4",
+  },
+  right: {
+    id: "demand-hero-right",
+    src: "https://1832952182.cdn.123clouddisk.com/1832952182/41204255",
+    fallback: "/assets/demand-hero-right.mp4",
+  },
 };
 
 const demandArchiveGalleryVideos = [
-  "https://1832952182.cdn.123clouddisk.com/1832952182/41095776",
-  "https://1832952182.cdn.123clouddisk.com/1832952182/41204867",
-  "https://1832952182.cdn.123clouddisk.com/1832952182/41147163",
-  "https://1832952182.cdn.123clouddisk.com/1832952182/41204869",
-  "https://1832952182.cdn.123clouddisk.com/1832952182/41122213",
-  "https://1832952182.cdn.123clouddisk.com/1832952182/41095776",
-  "https://1832952182.cdn.123clouddisk.com/1832952182/41204867",
-  "https://1832952182.cdn.123clouddisk.com/1832952182/41147163",
-  "https://1832952182.cdn.123clouddisk.com/1832952182/41204869",
-  "https://1832952182.cdn.123clouddisk.com/1832952182/41122213",
+  {
+    id: "demand-gallery-1",
+    src: "https://1832952182.cdn.123clouddisk.com/1832952182/41095776",
+    fallback: "/assets/demand-gallery-1.mp4",
+  },
+  {
+    id: "demand-gallery-2",
+    src: "https://1832952182.cdn.123clouddisk.com/1832952182/41204867",
+    fallback: "/assets/demand-gallery-2.mp4",
+  },
+  {
+    id: "demand-gallery-3",
+    src: "https://1832952182.cdn.123clouddisk.com/1832952182/41147163",
+    fallback: "/assets/demand-gallery-3.mp4",
+  },
+  {
+    id: "demand-gallery-4",
+    src: "https://1832952182.cdn.123clouddisk.com/1832952182/41204869",
+    fallback: "/assets/demand-gallery-4.mp4",
+  },
+  {
+    id: "demand-gallery-5",
+    src: "https://1832952182.cdn.123clouddisk.com/1832952182/41122213",
+    fallback: "/assets/demand-gallery-5.mp4",
+  },
+  {
+    id: "demand-gallery-1-repeat",
+    src: "https://1832952182.cdn.123clouddisk.com/1832952182/41095776",
+    fallback: "/assets/demand-gallery-1.mp4",
+  },
+  {
+    id: "demand-gallery-2-repeat",
+    src: "https://1832952182.cdn.123clouddisk.com/1832952182/41204867",
+    fallback: "/assets/demand-gallery-2.mp4",
+  },
+  {
+    id: "demand-gallery-3-repeat",
+    src: "https://1832952182.cdn.123clouddisk.com/1832952182/41147163",
+    fallback: "/assets/demand-gallery-3.mp4",
+  },
+  {
+    id: "demand-gallery-4-repeat",
+    src: "https://1832952182.cdn.123clouddisk.com/1832952182/41204869",
+    fallback: "/assets/demand-gallery-4.mp4",
+  },
+  {
+    id: "demand-gallery-5-repeat",
+    src: "https://1832952182.cdn.123clouddisk.com/1832952182/41122213",
+    fallback: "/assets/demand-gallery-5.mp4",
+  },
 ];
 
 const demandArchiveSymbols = ["8", "$", "^^", "%", "/"];
@@ -278,6 +494,7 @@ function CatDemandSection() {
   const cardRefs = useRef([]);
   const activeSideRef = useRef("right");
   const scrubFrameRef = useRef(null);
+  const lastHeroSeekRef = useRef({ left: 0, right: 0 });
   const lastSymbolSwapRef = useRef(0);
   const [archiveColumns, setArchiveColumns] = useState(getDemandArchiveColumns);
   const archiveLayout = useMemo(
@@ -306,9 +523,12 @@ function CatDemandSection() {
     const scrubVideo = (side, progress) => {
       const video = side === "left" ? leftVideo : rightVideo;
       showVideoSide(side);
-      if (!video.duration || video.seeking) return;
+      const now = window.performance.now();
+      if (now - lastHeroSeekRef.current[side] < 1000 / 30) return;
       video.pause();
-      video.currentTime = clamp(progress, 0, 1) * video.duration;
+      if (safeSeekVideo(video, clamp(progress, 0, 1) * video.duration)) {
+        lastHeroSeekRef.current[side] = now;
+      }
     };
 
     const handlePointerMove = (event) => {
@@ -348,7 +568,7 @@ function CatDemandSection() {
         }
 
         const currentVideo = activeSideRef.current === "left" ? leftVideo : rightVideo;
-        if (!currentVideo.seeking) currentVideo.currentTime = 0;
+        safeSeekVideo(currentVideo, 0, { minDelta: 0.04 });
       });
     };
 
@@ -363,14 +583,14 @@ function CatDemandSection() {
     const switchToRight = () => {
       if (!isTouchLike()) return;
       showVideoSide("right");
-      rightVideo.currentTime = 0;
+      safeSeekVideo(rightVideo, 0, { minDelta: 0 });
       rightVideo.play().catch(() => {});
     };
 
     const switchToLeft = () => {
       if (!isTouchLike()) return;
       showVideoSide("left");
-      leftVideo.currentTime = 0;
+      safeSeekVideo(leftVideo, 0, { minDelta: 0 });
       leftVideo.play().catch(() => {});
     };
 
@@ -547,18 +767,22 @@ function CatDemandSection() {
         </motion.div>
 
         <div ref={videoStageRef} className="demand-archive__video-stage" aria-hidden="true">
-          <video
+          <ResilientVideo
             ref={leftVideoRef}
             className="demand-archive__video demand-archive__video--left"
-            src={demandArchiveHeroVideos.left}
+            data-video-id={demandArchiveHeroVideos.left.id}
+            src={demandArchiveHeroVideos.left.src}
+            fallback={demandArchiveHeroVideos.left.fallback}
             muted
             playsInline
             preload="auto"
           />
-          <video
+          <ResilientVideo
             ref={rightVideoRef}
             className="demand-archive__video demand-archive__video--right"
-            src={demandArchiveHeroVideos.right}
+            data-video-id={demandArchiveHeroVideos.right.id}
+            src={demandArchiveHeroVideos.right.src}
+            fallback={demandArchiveHeroVideos.right.fallback}
             muted
             playsInline
             preload="auto"
@@ -597,6 +821,7 @@ function CatDemandSection() {
                   }
 
                   const isLeftHalf = columnIndex < archiveColumns / 2;
+                  const videoSource = demandArchiveGalleryVideos[videoIndex];
 
                   return (
                     <article
@@ -607,7 +832,16 @@ function CatDemandSection() {
                         cardRefs.current[videoIndex] = node;
                       }}
                     >
-                      <video src={demandArchiveGalleryVideos[videoIndex]} muted playsInline loop autoPlay preload="metadata" />
+                      <ResilientVideo
+                        src={videoSource.src}
+                        fallback={videoSource.fallback}
+                        data-video-id={videoSource.id}
+                        muted
+                        playsInline
+                        loop
+                        autoPlay
+                        preload="metadata"
+                      />
                       <div className="demand-archive__card-label">
                         <span>{String(videoIndex + 1).padStart(2, "0")}</span>
                         <strong>{videoIndex % 2 === 0 ? "conversion" : "collaboration"}</strong>
@@ -665,10 +899,16 @@ const capabilityProofs = [
       "02.新产品出现后，设计需求不会只来自设计内部，还会涉及采购、运营、产品信息、物流单证、上架节奏和销售反馈。我跑过这些流程，所以我知道信息在哪里容易断，沟通在哪里容易慢。\n这也是我适合管理岗的原因之一：我不只是执行者，也可以成为目标拆解者、资源协调者和结果负责人。这让我可以在平面、视频、主图、品宣之间建立更合理的节奏和标准，而不是让每个人只在自己的环节里独立完成任务",
   },
   {
-    id: "bottom-right",
+    id: "bottom-left",
     number: "03",
     label:
-      "03：这个网页本身也是一次小型证明：在有限时间、真实压力和明确目标下，我能完成从策略、视觉、文案到落地的完整闭环",
+      "03.我能把单点执行沉淀成流程和标准：让平面、视频、主图、品宣在同一节奏里推进，减少重复沟通和临时返工。",
+  },
+  {
+    id: "bottom-right",
+    number: "04",
+    label:
+      "04：这个网页本身也是一次小型证明：在有限时间、真实压力和明确目标下，我能完成从策略、视觉、文案到落地的完整闭环",
   },
 ];
 
@@ -749,7 +989,7 @@ function ScrollVideoChallengeSection() {
         element.style.filter = `blur(${((1 - opacity) * 8).toFixed(2)}px)`;
       });
 
-      if (videoReadyRef.current && video.duration && Number.isFinite(video.duration)) {
+      if (videoReadyRef.current && Number.isFinite(video.duration) && video.duration > 0) {
         const videoProgress =
           scrollProgress <= 0.001 || scrollProgress >= 0.999
             ? scrollProgress
@@ -761,8 +1001,7 @@ function ScrollVideoChallengeSection() {
         const hasEnoughTime = now - lastVideoSeekRef.current >= seekInterval;
         const hasEnoughDelta = Math.abs(video.currentTime - nextTime) > (isEdge ? 0.001 : 0.018);
 
-        if (isEdge || (hasEnoughTime && hasEnoughDelta && video.readyState >= 2)) {
-          video.currentTime = nextTime;
+        if ((isEdge || (hasEnoughTime && hasEnoughDelta)) && safeSeekVideo(video, nextTime, { minDelta: isEdge ? 0.001 : 0.018 })) {
           lastVideoSeekRef.current = now;
         }
       }
@@ -773,7 +1012,7 @@ function ScrollVideoChallengeSection() {
     const handleLoaded = () => {
       videoReadyRef.current = true;
       video.pause();
-      video.currentTime = 0;
+      safeSeekVideo(video, 0, { minDelta: 0 });
       updateTarget();
     };
 
@@ -801,7 +1040,7 @@ function ScrollVideoChallengeSection() {
   return (
     <section className="scroll-challenge" id="future" ref={sectionRef} aria-labelledby="future-title">
       <div className="scroll-challenge__sticky" aria-hidden="true">
-        <video
+        <ResilientVideo
           ref={videoRef}
           className="scroll-challenge__video"
           src="/assets/future-product-scroll-bg.mp4"
@@ -840,6 +1079,7 @@ function CapabilityMatchSection() {
   const activeZoneRef = useRef(null);
   const mouseRef = useRef({ x: 0, y: 0, hasPointer: false });
   const rafRef = useRef(null);
+  const lastCapabilitySeekRef = useRef({});
   const [activeZone, setActiveZone] = useState(null);
 
   useEffect(() => {
@@ -906,7 +1146,7 @@ function CapabilityMatchSection() {
       Object.entries(videoRefs.current).forEach(([id, video]) => {
         if (!video || id === visibleZone) return;
         video.pause();
-        if (!video.seeking && video.currentTime > 0.04) video.currentTime = 0;
+        safeSeekVideo(video, 0, { minDelta: 0.04 });
       });
     };
 
@@ -921,10 +1161,14 @@ function CapabilityMatchSection() {
           video.play().catch(() => {});
         } else {
           video.pause();
-          if (video.duration && Number.isFinite(video.duration) && !video.seeking) {
+          if (canSeekVideo(video)) {
+            const now = window.performance.now();
+            const lastSeek = lastCapabilitySeekRef.current[zone] || 0;
             const progress = activeZoneRef.current ? getScrubProgress(activeZoneRef.current, mouseRef.current.x) : 0;
             const nextTime = clamp(progress * video.duration, 0, Math.max(0, video.duration - 0.001));
-            if (Math.abs(video.currentTime - nextTime) > 0.018) video.currentTime = nextTime;
+            if (now - lastSeek >= 1000 / 30 && safeSeekVideo(video, nextTime)) {
+              lastCapabilitySeekRef.current[zone] = now;
+            }
           }
         }
       }
@@ -989,7 +1233,7 @@ function CapabilityMatchSection() {
 
         <div className="capability-canvas" aria-hidden="true">
           {capabilityVideos.map((video) => (
-            <video
+            <ResilientVideo
               className={`capability-bg-video ${activeVideo === video.id ? "is-active" : ""}`}
               data-zone={video.id}
               key={video.id}

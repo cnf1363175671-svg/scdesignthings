@@ -8,11 +8,15 @@
 
 - `hero-cinematic-bg.mp4`：开屏 Hero 背景视频
 - `cat-demand-eye-track.mp4`：第二板块猫咪互动视频
+- `demand-hero-left.mp4`、`demand-hero-right.mp4`：第二板块 123 云盘 Hero 视频的本地 fallback
+- `demand-gallery-1.mp4` 到 `demand-gallery-5.mp4`：第二板块 123 云盘画廊视频的本地 fallback
 - `future-product-scroll-bg.mp4`：第三板块滚动控制视频
 - `capability-top-left.mp4`、`capability-top-right.mp4`、`capability-bottom-left.mp4`、`capability-bottom-right.mp4`：第四板块鼠标分区互动视频
 - `future-product-pov-cat.mp4`：备用/保留的新产品视频素材
 
 页面目前没有依赖本地图片素材；视觉内容主要由视频、CSS 和交互动画组成。
+
+第二板块的 archive 视频会优先加载 123 云盘直链；如果外链报错、loadedmetadata 超时，或长时间无法进入可播放状态，会自动切换到 `public/assets` 下的本地 fallback 文件。
 
 ## 关键互动
 
